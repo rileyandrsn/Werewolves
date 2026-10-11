@@ -1,31 +1,51 @@
+#include <stdio.h>
+#include <stdlib.h>
+
 #include "comm.h"
-#include <sys/un.h>
 
-int main()
+int main(void)
 {
+    struct sockaddr_un addr;
+    comm_addr_setup(&addr);
 
+    int server_sockfd = comm_socket_setup();
+    if (server_sockfd == -1) {
+        perror("server: create socket");
+        return EXIT_FAILURE;
+    }
 
-int server_sockfd = comm_socket_setup();
-if(server_sockfd == -1)
-{
-    fprintf(stderr,"ERROR | Terminating server | Issue establishing server socket");
-    return -1;
-}
+    if (comm_server_setup(server_sockfd, &addr, 32) == -1) {
+        perror("server: bind/listen");
+        if (comm_close(server_sockfd) == -1) {
+            perror("server: close listener");
+        }
+        return EXIT_FAILURE;
+    }
 
-struct sockaddr_un *addr = {0};
-addr = comm_addr_setup(addr);
+    printf("Waiting for players to connect at %s...\n", addr.sun_path);
+    fflush(stdout);
 
-int setup_result = comm_server_setup(server_sockfd, addr, 32);
-if(setup_result != 0)
-{
-    fprintf(stderr,"ERROR | Terminating server | Issue binding and listening on server socket");
-    return -1;
-}
+    int result = EXIT_SUCCESS;
+    int client_fd = comm_server_accept(server_sockfd);
+    if (client_fd == -1) {
+        perror("server: accept");
+        result = EXIT_FAILURE;
+    } else {
+        puts("Player connected!");
+        if (comm_close(client_fd) == -1) {
+            perror("server: close player connection");
+            result = EXIT_FAILURE;
+        }
+    }
 
-int client_fd = comm_server_accept(server_sockfd);
+    if (comm_close(server_sockfd) == -1) {
+        perror("server: close listener");
+        result = EXIT_FAILURE;
+    }
+    if (comm_server_cleanup(&addr) == -1) {
+        perror("server: remove socket path");
+        result = EXIT_FAILURE;
+    }
 
-comm_close(client_fd);
-comm_close(server_sockfd);
-
-
+    return result;
 }

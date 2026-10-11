@@ -5,11 +5,11 @@ CFLAGS = -Wall -Wextra -std=c11 -g
 
 all: server client
 
-server: src/server.c 
-	$(CC) $(CFLAGS) -o $@ $<
+server: src/server.c src/comm.c src/comm.h
+	$(CC) $(CFLAGS) -o $@ src/server.c src/comm.c
 
-client: src/client.c 
-	$(CC) $(CFLAGS) -o $@ $<
+client: src/client.c src/comm.c src/comm.h
+	$(CC) $(CFLAGS) -o $@ src/client.c src/comm.c
 
 clean:
 	$(RM) server client

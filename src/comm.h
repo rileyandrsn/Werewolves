@@ -1,92 +1,101 @@
 #ifndef COMM_H
 #define COMM_H
 
-
-#include <stdio.h>
-#include <string.h>
-#include <sys/socket.h>
 #include <sys/un.h>
-#include <unistd.h>
 
-
-
-
-/* Creates a socket and sockaddr struct 
- * 
- * Returns:
- * - int server_sockfd: file descriptor for established socket
- * - int -1: error occured establishing socket
- *
+/*
+ * Blocking UNIX stream helpers
+ * Callers report errors and close their sockets
  */
-int comm_socket_setup();
 
-
-
-
-/* Initializes the sockaddr_un struct argument to the path of the server socket
+/*
+ * Create a blocking UNIX stream socket
  *
  * Parameters:
- * - struct sockaddr_un *addr: sockaddr_un struct pointer to be initialized
+ * - void: No parameters
  *
  * Returns:
- * - struct sockaddr_un *addr: initialized sockaddr_un struct
+ * - int sockfd (>= 0): New socket on success; caller must close it
+ * - int -1: Creation failed; errno gives the error
+ */
+int comm_socket_setup(void);
+
+/*
+ * Set the server socket address
  *
+ * Parameters:
+ * - struct sockaddr_un *addr: Non-NULL address storage to initialize
+ *
+ * Returns:
+ * - struct sockaddr_un *addr: The initialized address pointer; no error return
  */
 struct sockaddr_un *comm_addr_setup(struct sockaddr_un *addr);
 
-
-
-
-/* Binds the server's socket to the sockaddr_un struct and begins listening for up to 'backlog' number of connections
+/*
+ * Bind the server socket and listen for connections
+ * Keep existing paths; try to remove the new path if listen fails
  *
  * Parameters:
- * - int server_sockfd: server socket file descriptor
- * - struct sockaddr_un *addr: pointer to sockaddr_un struct
- * - int backlog: number of connections to listen for
+ * - int server_sockfd: Unbound server socket; caller must close it
+ * - const struct sockaddr_un *addr: Non-NULL server address to bind
+ * - int backlog: Pending connection limit requested from the OS
  *
  * Returns:
- * - int 0: No errors occured when binding socket to addr struct, or listening on server socket
- * - int -1: Error occured binding to socket or listening on server socket
- *
+ * - int 0: Socket is bound and listening
+ * - int -1: Bind or listen failed; errno keeps that error after cleanup
  */
-int comm_server_setup(int server_sockfd, struct sockaddr_un *addr, int backlog);
+int comm_server_setup(int server_sockfd, const struct sockaddr_un *addr, int backlog);
 
-
-
-
-/* Waits to accept a connection from client(s)
+/*
+ * Wait for one client connection; retry if interrupted by a signal
  *
  * Parameters:
- * - int listen_sockfd: socket file descriptor to accept connections on
+ * - int listen_sockfd: Listening server socket; stays open
  *
  * Returns:
- * - int client_fd: file descriptor of accepted client connection
- * - int -1: Error accepting incoming client connection
- *
+ * - int client_fd (>= 0): Accepted connection; caller must close it
+ * - int -1: Accept failed for a reason other than EINTR; errno gives the error
  */
 int comm_server_accept(int listen_sockfd);
 
-
-
-
-/* Connects a client to the server process's socket
+/*
+ * Connect a client socket to the server
  *
  * Parameters:
- * - int server_sockfd: file descriptor of the server's socket to connect to
- * - struct sockaddr_un *addr: sockaddr_un struct specifying server socket
+ * - int client_sockfd: Unconnected client socket; caller must close it
+ * - const struct sockaddr_un *addr: Non-NULL server address to connect to
  *
  * Returns:
- * - int 0: Successfully connected to server
- * - int -1: Error connecting to server
- *
+ * - int 0: Connected to the server
+ * - int -1: Connection failed; errno gives the error
  */
-int comm_client_connect(int server_sockfd, struct sockaddr_un *addr);
+int comm_client_connect(int client_sockfd, const struct sockaddr_un *addr);
 
+/*
+ * Close a socket without removing its path
+ * Do not retry on Linux; the descriptor may already be reused
+ *
+ * Parameters:
+ * - int fd: Socket descriptor to close
+ *
+ * Returns:
+ * - int 0: Socket closed
+ * - int -1: Close reported an error; errno gives the error
+ */
+int comm_close(int fd);
 
-
-
-/* Closes the communication socket specified in the fd argument*/
-void comm_close(int fd);
-
+/*
+ * Remove the server socket path without closing sockets
+ * Only use for this server's bound path in a trusted directory
+ * Path ownership is not checked
+ *
+ * Parameters:
+ * - const struct sockaddr_un *addr: Non-NULL address with the path to remove
+ *
+ * Returns:
+ * - int 0: Path removed
+ * - int -1: Removal failed, including a missing path; errno gives the error
+ */
+int comm_server_cleanup(const struct sockaddr_un *addr);
 
 #endif
