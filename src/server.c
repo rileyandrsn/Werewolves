@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/random.h>
 #include <time.h>
 
@@ -23,10 +24,20 @@
 #define NUM_WEREWOLVES 1
 #endif
 
+#ifndef WOLF_CHAT_SECONDS
+#define WOLF_CHAT_SECONDS 30
+#endif
+
+#ifndef WOLF_VOTE_SECONDS
+#define WOLF_VOTE_SECONDS 30
+#endif
+
 _Static_assert(LOBBY_WAITING_TIME >= 0, "Lobby duration must not be negative");
 _Static_assert(MAX_PLAYERS > 0, "Player limit must be positive");
 _Static_assert(NUM_WEREWOLVES > 0, "There must be at least one werewolf");
 _Static_assert(NUM_WEREWOLVES < MAX_PLAYERS, "Leave room for one witch");
+_Static_assert(WOLF_CHAT_SECONDS > 0, "Chat window must be positive");
+_Static_assert(WOLF_VOTE_SECONDS > 0, "Vote window must be positive");
 
 /*
  * Pick a random index using Linux random bytes
@@ -122,20 +133,6 @@ static int assign_roles(player_t *players)
 }
 
 /*
- * Placeholder for the next game step
- *
- * Parameters:
- * - void: No parameters
- *
- * Returns:
- * - void: Returns immediately
- */
-void temp(void)
-{
-    return;
-}
-
-/*
  * Find the time left before the lobby deadline
  *
  * Parameters:
@@ -163,6 +160,322 @@ static int remaining_ms(const struct timespec *deadline)
     int64_t milliseconds = (nanoseconds + 999999) / 1000000;
     return milliseconds > INT_MAX ? INT_MAX : (int)milliseconds;
 }
+
+typedef enum {
+    PHASE_CHAT,
+    PHASE_VOTE
+} phase_t;
+
+typedef struct {
+    player_t *players;
+    comm_peer_t peers[MAX_PLAYERS];
+    int votes[MAX_PLAYERS];
+} night_t;
+
+/* Close a disconnected player and remove any pending vote from that player */
+static void drop_player(night_t *night, int index)
+{
+    player_t *player = &night->players[index];
+    if (!player->is_connected) {
+        return;
+    }
+    if (comm_close(player->fd) == -1) {
+        perror("server: close player");
+    }
+    player->fd = -1;
+    player->is_connected = false;
+    player->is_alive = false;
+    night->votes[index] = -1;
+}
+
+/* Queue a private message and remove a player whose output queue fills */
+static void send_player(night_t *night, int index, const char *message)
+{
+    if (night->players[index].is_connected &&
+        comm_peer_queue(&night->peers[index], message) == -1) {
+        drop_player(night, index);
+    }
+}
+
+/* Queue one message for each selected recipient through the same framing path */
+static void send_group(night_t *night, const char *message, bool wolves_only,
+                       int exclude)
+{
+    comm_peer_t *recipients[MAX_PLAYERS];
+    int slots[MAX_PLAYERS];
+    int results[MAX_PLAYERS];
+    size_t count = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (!night->players[i].is_connected || i == exclude ||
+            (wolves_only && night->players[i].role != WEREWOLF)) {
+            continue;
+        }
+        recipients[count] = &night->peers[i];
+        slots[count++] = i;
+    }
+    if (count == 0) {
+        return;
+    }
+    comm_peer_queue_group(recipients, count, message, results);
+    for (size_t i = 0; i < count; i++) {
+        if (results[i] == -1) {
+            drop_player(night, slots[i]);
+        }
+    }
+}
+
+/* Tell each player only their own role; give wolves the valid target UIDs */
+static void announce_roles(night_t *night)
+{
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (!night->players[i].is_connected) {
+            continue;
+        }
+        const char *role = night->players[i].role == WEREWOLF ? "WEREWOLF" :
+                           night->players[i].role == WITCH ? "WITCH" : "TOWNSPERSON";
+        char message[COMM_MAX_PAYLOAD + 1];
+        snprintf(message, sizeof(message), "ROLE %s UID %ju",
+                 role, (uintmax_t)night->players[i].uid);
+        send_player(night, i, message);
+        if (!night->players[i].is_connected || night->players[i].role != WEREWOLF) {
+            continue;
+        }
+        size_t used = (size_t)snprintf(message, sizeof(message), "TARGETS");
+        for (int j = 0; j < MAX_PLAYERS; j++) {
+            if (j == i || !night->players[j].is_connected) {
+                continue;
+            }
+            int written = snprintf(message + used, sizeof(message) - used,
+                                   " %ju", (uintmax_t)night->players[j].uid);
+            if (written < 0 || (size_t)written >= sizeof(message) - used) {
+                break;
+            }
+            used += (size_t)written;
+        }
+        send_player(night, i, message);
+    }
+}
+
+/* Parse a UID and find a connected target other than the sender */
+static int find_target(night_t *night, int sender, const char *text)
+{
+    if (*text == '\0') {
+        return -1;
+    }
+    for (const char *digit = text; *digit; digit++) {
+        if (*digit < '0' || *digit > '9') {
+            return -1;
+        }
+    }
+    errno = 0;
+    char *end;
+    uintmax_t requested = strtoumax(text, &end, 10);
+    if (errno != 0 || *end != '\0' || requested > (uintmax_t)(uid_t)-1) {
+        return -1;
+    }
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (i != sender && night->players[i].is_connected &&
+            night->players[i].uid == (uid_t)requested) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* Validate a command against the sender's role and current phase */
+static void handle_command(night_t *night, int sender, phase_t phase,
+                           const char *message)
+{
+    if (night->players[sender].role != WEREWOLF) {
+        send_player(night, sender, "ERROR Only werewolves can act at night");
+        return;
+    }
+    if (phase == PHASE_CHAT && strncmp(message, "CHAT ", 5) == 0) {
+        const char *chat = message + 5;
+        size_t length = strlen(chat);
+        if (length == 0 || length > 200) {
+            send_player(night, sender, "ERROR Chat must be 1 to 200 characters");
+            return;
+        }
+        for (size_t i = 0; i < length; i++) {
+            if ((unsigned char)chat[i] < 32 || (unsigned char)chat[i] > 126) {
+                send_player(night, sender, "ERROR Use printable ASCII in chat");
+                return;
+            }
+        }
+        char relay[COMM_MAX_PAYLOAD + 1];
+        snprintf(relay, sizeof(relay), "WOLF_CHAT %ju %s",
+                 (uintmax_t)night->players[sender].uid, chat);
+        send_group(night, relay, true, sender);
+        send_player(night, sender, "ACK CHAT");
+        return;
+    }
+    if (phase == PHASE_VOTE && strncmp(message, "VOTE ", 5) == 0) {
+        int target = find_target(night, sender, message + 5);
+        if (target == -1) {
+            send_player(night, sender, "ERROR Choose another connected player UID");
+            return;
+        }
+        night->votes[sender] = target;
+        send_player(night, sender, "ACK VOTE");
+        return;
+    }
+    send_player(night, sender, "ERROR Command is not allowed in this phase");
+}
+
+/* Run a phase until its monotonic deadline while servicing every player */
+static int run_phase(night_t *night, phase_t phase, int seconds)
+{
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_MONOTONIC, &deadline) == -1) {
+        return -1;
+    }
+    deadline.tv_sec += seconds;
+    char announcement[64];
+    snprintf(announcement, sizeof(announcement), "PHASE %s %d",
+             phase == PHASE_CHAT ? "CHAT" : "VOTE", seconds);
+    send_group(night, announcement, true, -1);
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (night->players[i].is_connected && night->players[i].role != WEREWOLF) {
+            send_player(night, i, "********SLEEPING********");
+        }
+    }
+
+    for (;;) {
+        int timeout_ms = remaining_ms(&deadline);
+        if (timeout_ms <= 0) {
+            return timeout_ms;
+        }
+        comm_watch_t watches[MAX_PLAYERS] = {0};
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            watches[i].fd = night->players[i].is_connected ? night->players[i].fd : -1;
+            watches[i].want_write = night->players[i].is_connected &&
+                                    comm_peer_has_output(&night->peers[i]);
+        }
+        if (comm_wait(watches, MAX_PLAYERS, timeout_ms) == -1) {
+            return -1;
+        }
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (!night->players[i].is_connected) {
+                continue;
+            }
+            if (watches[i].writable && comm_peer_flush(&night->peers[i]) == -1) {
+                drop_player(night, i);
+                continue;
+            }
+            if (!watches[i].readable) {
+                continue;
+            }
+            for (int frame = 0; frame < 8; frame++) {
+                char message[COMM_MAX_PAYLOAD + 1];
+                int status = comm_peer_read(&night->peers[i], message, sizeof(message));
+                if (status == 0) {
+                    break;
+                }
+                if (status != 1) {
+                    drop_player(night, i);
+                    break;
+                }
+                if (remaining_ms(&deadline) <= 0) {
+                    break;
+                }
+                handle_command(night, i, phase, message);
+                if (!night->players[i].is_connected) {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/* Resolve plurality votes; a tie or no votes means no one is eaten */
+static void resolve_votes(night_t *night)
+{
+    int tallies[MAX_PLAYERS] = {0};
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        int target = night->votes[i];
+        if (night->players[i].is_connected && night->players[i].role == WEREWOLF &&
+            target >= 0 && night->players[target].is_connected) {
+            tallies[target]++;
+        }
+    }
+    int winner = -1;
+    int highest = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (tallies[i] > highest) {
+            highest = tallies[i];
+            winner = i;
+        } else if (tallies[i] != 0 && tallies[i] == highest) {
+            winner = -1;
+        }
+    }
+    if (winner == -1) {
+        send_group(night, "RESULT NO_KILL", false, -1);
+        puts("Night ended with no kill");
+        return;
+    }
+    night->players[winner].is_alive = false;
+    char message[64];
+    snprintf(message, sizeof(message), "RESULT EATEN %ju",
+             (uintmax_t)night->players[winner].uid);
+    send_group(night, message, false, -1);
+    printf("Night ended: player UID %ju was eaten\n",
+           (uintmax_t)night->players[winner].uid);
+}
+
+/* Flush final messages for up to one second without waiting on a slow player */
+static void flush_results(night_t *night)
+{
+    struct timespec deadline;
+    if (clock_gettime(CLOCK_MONOTONIC, &deadline) == -1) {
+        return;
+    }
+    deadline.tv_sec++;
+    for (;;) {
+        comm_watch_t watches[MAX_PLAYERS] = {0};
+        bool pending = false;
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            watches[i].fd = night->players[i].is_connected ? night->players[i].fd : -1;
+            watches[i].want_write = night->players[i].is_connected &&
+                                    comm_peer_has_output(&night->peers[i]);
+            pending |= watches[i].want_write;
+        }
+        int timeout = remaining_ms(&deadline);
+        if (!pending || timeout <= 0 || comm_wait(watches, MAX_PLAYERS, timeout) == -1) {
+            return;
+        }
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (night->players[i].is_connected && watches[i].writable &&
+                comm_peer_flush(&night->peers[i]) == -1) {
+                drop_player(night, i);
+            }
+        }
+    }
+}
+
+/* Play the first night phase and return 0 on success or -1 on wait failure */
+static int first_night(player_t *players)
+{
+    night_t night = {.players = players};
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        night.votes[i] = -1;
+        if (players[i].is_connected) {
+            comm_peer_init(&night.peers[i], players[i].fd);
+        }
+    }
+    send_group(&night, "Entering the night", false, -1);
+    announce_roles(&night);
+    if (NUM_WEREWOLVES > 1 && run_phase(&night, PHASE_CHAT, WOLF_CHAT_SECONDS) == -1) {
+        return -1;
+    }
+    if (run_phase(&night, PHASE_VOTE, WOLF_VOTE_SECONDS) == -1) {
+        return -1;
+    }
+    resolve_votes(&night);
+    flush_results(&night);
+    return 0;
+}
+
 
 int main(void)
 {
@@ -318,7 +631,10 @@ int main(void)
         result = EXIT_FAILURE;
         goto cleanup;
     }
-    temp();
+    if (first_night(players) == -1) { // Connected players with assigned roles
+        perror("server: first night");
+        result = EXIT_FAILURE;
+    }
 
 cleanup:
     for (int i = 0; i < MAX_PLAYERS; i++) {

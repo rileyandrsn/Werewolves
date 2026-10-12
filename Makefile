@@ -15,7 +15,7 @@ client: src/client.c src/comm.c src/comm.h
 
 clean:
 	$(RM) server client
-	@socket_path=/tmp/ww_server.sock; \
+	@socket_path=/tmp/ww_server/socket; \
 	if [ -S "$$socket_path" ] && [ ! -L "$$socket_path" ] && [ -O "$$socket_path" ]; then \
 		if [ -r /proc/net/unix ] && \
 		   awk -v path="$$socket_path" '$$8 == path { found = 1 } END { exit found }' /proc/net/unix; then \
@@ -23,4 +23,7 @@ clean:
 		else \
 			echo "Keeping $$socket_path: active socket or unable to check"; \
 		fi; \
+	fi; \
+	if [ -d /tmp/ww_server ] && [ ! -L /tmp/ww_server ] && [ -O /tmp/ww_server ]; then \
+		rmdir /tmp/ww_server 2>/dev/null || true; \
 	fi

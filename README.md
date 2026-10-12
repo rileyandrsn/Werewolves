@@ -1,1 +1,66 @@
 # Werewolves
+
+A Linux C11 text game in progress. The moderator and clients communicate over a
+UNIX domain stream socket. The current game ends after the werewolves' first
+night vote.
+
+## Build and run
+
+```sh
+make
+./server
+```
+
+Run `./client` in a separate terminal for each player before the lobby closes.
+The server accepts one active connection per Linux UID. For a multiuser run,
+each player must use a distinct non-root account in the moderator's socket
+group. The moderator owns `/tmp/ww_server`, which players can traverse but
+cannot modify; its socket is writable by the group. Several clients under
+one UID are useful for testing a rejected duplicate, but do not create
+multiple players.
+
+`make num_werewolves=2` builds a server with two werewolves; plain `make` uses
+one. `MAX_PLAYERS` is 16 and `LOBBY_WAITING_TIME` is 120 seconds by default.
+The moderator is not assigned a role. If fewer than the configured number of
+werewolves plus one witch remain at the deadline, the game stops. Run
+`make clean` to remove binaries and an owned stale socket; it preserves a live
+socket.
+
+## First night
+
+After the lobby closes, every client sees `Entering the night`, then privately
+receives its role and UID.
+Werewolves also receive the UIDs they may target: every other connected player,
+including other werewolves. A werewolf cannot target themself.
+During each werewolf window, the witch and townspeople see
+`********SLEEPING********`. Only werewolves receive the chat or vote prompt.
+
+With two or more werewolves, a 30-second chat window comes first. A werewolf
+may enter `/chat message`; only the other werewolves receive it. All
+werewolves then get a separate 30-second vote window. With one werewolf, the
+vote window starts immediately. Enter `/vote UID` or `/eat UID` to choose a
+target. A new valid vote replaces that werewolf's previous vote. The server
+acknowledges accepted commands; invalid commands receive an error. The target
+with the most votes is eaten. A tie or no valid votes means no kill. The server
+then sends the result to all connected clients and exits.
+
+## Files and communications
+
+- `src/comm.c` is the communications library: socket setup, peer UID lookup,
+  readiness waiting, framed reads and writes, queues, and group delivery
+- `src/comm.h` declares the communications API and its return values
+- `src/server.c` owns player state, role assignment, authorization, phase
+  deadlines, chat recipients, votes, and results
+- `src/client.c` reads terminal commands and displays server messages
+- `src/game.h` defines player and role types
+- `Makefile` builds the two executables
+
+Each wire message is ASCII text preceded by a four-byte unsigned length in
+network byte order. Payloads have 1 to 512 bytes and are never raw C structs.
+`comm_peer_init` creates per-connection transport state; `comm_peer_read`
+receives one frame; `comm_peer_queue` and `comm_peer_queue_group` enqueue
+private or group messages; `comm_peer_flush` sends queued bytes without
+blocking. `comm_wait` reports readiness for the server and client. The server
+uses `comm_peer_uid` to get identity from Linux `SO_PEERCRED` rather than a
+client-supplied name. A successful queue or send does not mean a game command
+was accepted; the server sends `ACK` or `ERROR` for that.

@@ -2,6 +2,7 @@
 #define COMM_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stddef.h>
 #include <sys/types.h>
 #include <sys/un.h>
@@ -14,7 +15,109 @@
 typedef struct {
     int fd; // Socket to watch; negative values are ignored
     bool ready; // Socket has input, a disconnect, or an error
+    bool want_write; // Also watch for space in the send buffer
+    bool readable; // Input, EOF, or socket error is ready
+    bool writable; // Output may be sent without blocking
 } comm_watch_t;
+
+#define COMM_MAX_PAYLOAD 512
+#define COMM_OUTPUT_CAPACITY 8192
+
+typedef struct {
+    int fd;
+    unsigned char input[4 + COMM_MAX_PAYLOAD];
+    size_t input_used;
+    size_t input_needed;
+    unsigned char output[COMM_OUTPUT_CAPACITY];
+    size_t output_used;
+    size_t output_sent;
+} comm_peer_t;
+
+/*
+ * Set up frame buffers for a connected socket
+ *
+ * Parameters:
+ * - comm_peer_t *peer: Non-NULL caller-owned transport state to initialize
+ * - int fd: Connected socket descriptor owned by the caller
+ *
+ * Returns:
+ * - void: No return value
+ */
+void comm_peer_init(comm_peer_t *peer, int fd);
+
+/*
+ * Read at most one length-prefixed text frame without blocking
+ * A frame is a 4-byte network-order length followed by 1 to 512 payload bytes
+ * The payload is ASCII command or notice text and cannot contain NUL
+ *
+ * Parameters:
+ * - comm_peer_t *peer: Non-NULL connection state and socket
+ * - char *payload: Non-NULL destination for text and a trailing NUL
+ * - size_t capacity: Destination size including room for the trailing NUL
+ *
+ * Returns:
+ * - int 1: Complete frame copied to payload
+ * - int 0: More bytes are needed; call again when readable
+ * - int 2: Clean EOF between frames
+ * - int -1: Socket, truncated frame, or invalid frame error; errno gives the cause
+ */
+int comm_peer_read(comm_peer_t *peer, char *payload, size_t capacity);
+
+/*
+ * Queue one length-prefixed text frame for nonblocking delivery
+ * Queue size is bounded; success does not mean the game accepted a command
+ *
+ * Parameters:
+ * - comm_peer_t *peer: Non-NULL connection state to queue on
+ * - const char *payload: NUL-terminated text of 1 to 512 bytes
+ *
+ * Returns:
+ * - int 0: Frame queued for later delivery
+ * - int -1: Invalid input or full queue; errno gives the cause
+ */
+int comm_peer_queue(comm_peer_t *peer, const char *payload);
+
+/*
+ * Queue one frame for each supplied recipient
+ * Group delivery is not atomic; check each result
+ *
+ * Parameters:
+ * - comm_peer_t *peers[]: Non-NULL array of non-NULL recipient states
+ * - size_t count: Number of recipients
+ * - const char *payload: NUL-terminated text to queue for each recipient
+ * - int results[]: Non-NULL array receiving 0 or -1 per recipient
+ *
+ * Returns:
+ * - int success_count (>= 0): Number of recipients queued successfully
+ * - int -1: Invalid arrays; errno gives the cause
+ */
+int comm_peer_queue_group(comm_peer_t *peers[], size_t count,
+                          const char *payload, int results[]);
+
+/*
+ * Send as much queued data as the socket currently accepts
+ * Uses MSG_NOSIGNAL so a disconnected peer cannot raise SIGPIPE
+ *
+ * Parameters:
+ * - comm_peer_t *peer: Non-NULL connection state with queued frames
+ *
+ * Returns:
+ * - int 0: Queue drained or socket would block; check has_output
+ * - int -1: Send failed; errno gives the cause
+ */
+int comm_peer_flush(comm_peer_t *peer);
+
+/*
+ * Check whether frames are still waiting to be sent
+ *
+ * Parameters:
+ * - const comm_peer_t *peer: Non-NULL connection state to inspect
+ *
+ * Returns:
+ * - bool true: Queued bytes remain
+ * - bool false: Output queue is empty
+ */
+bool comm_peer_has_output(const comm_peer_t *peer);
 
 /*
  * Wait for socket activity without reading any data
@@ -26,7 +129,7 @@ typedef struct {
  * - int timeout_ms: Maximum wait in milliseconds; -1 waits indefinitely
  *
  * Returns:
- * - int count (> 0): Number of ready sockets
+ * - int ready_count (> 0): Number of ready sockets
  * - int 0: Timeout or signal interruption
  * - int -1: Wait failed; errno gives the error
  */
@@ -56,7 +159,8 @@ int comm_socket_setup(void);
 struct sockaddr_un *comm_addr_setup(struct sockaddr_un *addr);
 
 /*
- * Make the server socket nonblocking, bind it, and listen for connections
+ * Create a moderator-owned socket directory, then bind and listen
+ * The directory is traversable by the group and the socket is group-writable
  * Keep existing paths; try to remove the new path if listen fails
  *
  * Parameters:
