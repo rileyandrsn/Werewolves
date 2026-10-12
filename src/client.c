@@ -20,7 +20,22 @@ int main(void)
         perror("client: connect");
         result = EXIT_FAILURE;
     } else {
-        puts("Connected to moderator!");
+        puts("Connected to moderator; waiting for the server to close the connection");
+        fflush(stdout);
+
+        comm_watch_t watch = {.fd = client_sockfd};
+        while (!watch.ready) {
+            if (comm_wait(&watch, // Server connection
+                          1,      // One socket
+                          -1) == -1) { // Wait without a timeout
+                perror("client: wait for server");
+                result = EXIT_FAILURE;
+                break;
+            }
+        }
+        if (result == EXIT_SUCCESS) {
+            puts("Server closed the connection");
+        }
     }
 
     if (comm_close(client_sockfd) == -1) {
