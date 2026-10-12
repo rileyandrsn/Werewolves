@@ -5,6 +5,52 @@ UNIX domain stream socket. Night and day repeat until one side wins.
 
 ## Build and run
 
+For a fresh Ubuntu VM, include `setup.sh` and `remove.sh` when creating the
+archive:
+
+```sh
+tar -czf werewolves.tgz Makefile README.md setup.sh remove.sh src
+```
+
+Copy the archive to the VM, extract it into any directory you own, then run:
+
+```sh
+tar -xzf werewolves.tgz
+sudo bash setup.sh
+```
+
+Setup installs missing C build tools, creates the `wwgame` group, `wwmod`, and
+four distinct player accounts (`wwplayer1` through `wwplayer4`), copies the
+project to `/opt/werewolves`, and builds it there. It needs administrator
+privileges. Build tools are installed with `apt-get` if needed, so that step
+needs package repository access. To choose two werewolves after setup, run
+`sudo -u wwmod make -C /opt/werewolves num_werewolves=2`.
+
+Open a terminal for the moderator and each player. In each terminal, switch
+to its account and enter the game directory:
+
+```sh
+sudo -iu wwmod
+cd /opt/werewolves
+./server
+```
+
+Use `wwplayer1`, `wwplayer2`, `wwplayer3`, and `wwplayer4` in the other
+terminals and run `./client` there. Start the server last because its lobby
+timer begins immediately. At least one werewolf and one witch are required.
+
+When everyone has exited the game and their account shells, run
+`sudo bash remove.sh` from the extracted project. The removal script removes
+only accounts (including their home directories), the group, and
+`/opt/werewolves` if setup created them. It keeps pre-existing accounts,
+groups, installations, and build tools. It stops
+if any game account still has a running process. If you already installed the
+game manually in `/opt/werewolves`, extract the updated archive into that
+directory as `wwmod` and run `sudo bash /opt/werewolves/setup.sh`; the removal
+script will preserve that earlier installation and its accounts.
+
+For a manual build without account setup:
+
 ```sh
 make
 ./server
@@ -74,6 +120,8 @@ winner. Otherwise another night begins.
 - `src/client.c` reads terminal commands and displays server messages
 - `src/game.h` defines player and role types
 - `Makefile` builds the two executables
+- `setup.sh` provisions VM accounts, installs the source, and builds the game
+- `remove.sh` removes resources recorded as created by setup
 
 Each wire message is ASCII text preceded by a four-byte unsigned length in
 network byte order. Payloads have 1 to 512 bytes and are never raw C structs.
