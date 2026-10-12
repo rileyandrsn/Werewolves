@@ -1,8 +1,8 @@
 # Werewolves
 
 A Linux C11 text game in progress. The moderator and clients communicate over a
-UNIX domain stream socket. The current game ends after the werewolves' first
-night vote.
+UNIX domain stream socket. The current game ends after the first werewolf and
+witch phases.
 
 ## Build and run
 
@@ -41,8 +41,16 @@ werewolves then get a separate 30-second vote window. With one werewolf, the
 vote window starts immediately. Enter `/vote UID` or `/eat UID` to choose a
 target. A new valid vote replaces that werewolf's previous vote. The server
 acknowledges accepted commands; invalid commands receive an error. The target
-with the most votes is eaten. A tie or no valid votes means no kill. The server
-then sends the result to all connected clients and exits.
+with the most votes is attacked. A tie or no valid votes means no attack.
+
+After voting, werewolves transform back into people and see the sleeping
+message. The witch alone learns who was attacked and gets a 30-second window.
+The witch may use `/heal` once to save that player and `/poison UID` once to
+kill another living player, including a werewolf. The witch cannot poison
+themself. A healed player privately receives a dazed awakening message and
+returns to sleep. A poisoned player privately learns that they died. Other
+players remain asleep during this window. Once it closes, all connected
+clients receive the final daybreak deaths and the server exits.
 
 ## Files and communications
 

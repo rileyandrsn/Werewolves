@@ -1,6 +1,8 @@
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "comm.h"
 
@@ -26,12 +28,19 @@ static void send_command(comm_peer_t *peer, const char *line)
                strncmp(line, "/eat ", 5) == 0) {
         verb = "VOTE";
         text = line + (line[1] == 'e' ? 5 : 6);
+    } else if (strcmp(line, "/heal") == 0) {
+        verb = "HEAL";
+        text = NULL;
+    } else if (strncmp(line, "/poison ", 8) == 0) {
+        verb = "POISON";
+        text = line + 8;
     } else {
-        puts("Use /chat message or /vote UID");
+        puts("Use /chat message, /vote UID, /heal, or /poison UID");
         return;
     }
     char payload[COMM_MAX_PAYLOAD + 1];
-    int written = snprintf(payload, sizeof(payload), "%s %s", verb, text);
+    int written = text == NULL ? snprintf(payload, sizeof(payload), "%s", verb) :
+                   snprintf(payload, sizeof(payload), "%s %s", verb, text);
     if (written < 0 || (size_t)written >= sizeof(payload) ||
         comm_peer_queue(peer, payload) == -1) {
         puts("Could not queue command");
@@ -58,10 +67,13 @@ int main(void)
 
     comm_peer_t peer;
     comm_peer_init(&peer, client_sockfd);
-    puts("Connected; use /chat message during wolf chat, then /vote UID to eat");
+    puts("Connected; use /chat message, /vote UID, /heal, or /poison UID when prompted");
     fflush(stdout);
     bool stdin_open = true;
     bool connected = true;
+    char input_line[256];
+    size_t input_used = 0;
+    bool input_overlong = false;
     while (connected) {
         comm_watch_t watches[2] = {
             {.fd = client_sockfd, .want_write = comm_peer_has_output(&peer)},
@@ -99,15 +111,39 @@ int main(void)
             }
         }
         if (connected && stdin_open && watches[1].readable) {
-            char line[256];
-            if (fgets(line, sizeof(line), stdin) == NULL) {
+            char chunk[256];
+            ssize_t received = read(0,             // Terminal input
+                                    chunk,         // Newly available bytes
+                                    sizeof(chunk)); // Maximum bytes to read
+            if (received == 0) {
                 stdin_open = false;
-            } else {
-                size_t length = strlen(line);
-                if (length > 0 && line[length - 1] == '\n') {
-                    line[length - 1] = '\0';
+                if (input_used > 0 && !input_overlong) {
+                    input_line[input_used] = '\0';
+                    send_command(&peer, input_line);
                 }
-                send_command(&peer, line);
+            } else if (received == -1) {
+                if (errno != EINTR && errno != EAGAIN) {
+                    perror("client: read terminal");
+                    stdin_open = false;
+                    result = EXIT_FAILURE;
+                }
+            } else {
+                for (ssize_t i = 0; i < received; i++) {
+                    if (chunk[i] == '\n') {
+                        if (input_overlong) {
+                            puts("Input line too long");
+                        } else {
+                            input_line[input_used] = '\0';
+                            send_command(&peer, input_line);
+                        }
+                        input_used = 0;
+                        input_overlong = false;
+                    } else if (input_used < sizeof(input_line) - 1) {
+                        input_line[input_used++] = chunk[i];
+                    } else {
+                        input_overlong = true;
+                    }
+                }
             }
         }
     }
