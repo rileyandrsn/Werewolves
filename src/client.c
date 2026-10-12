@@ -9,12 +9,17 @@
 /* Display untrusted server text without passing terminal control bytes through */
 static void display_message(const char *message)
 {
-    bool phase_boundary = strncmp(message, "PHASE ", 6) == 0 ||
+    bool phase_boundary = strncmp(message, "WEREWOLF CHAT ", 14) == 0 ||
+                          strncmp(message, "WEREWOLF VOTE ", 14) == 0 ||
+                          strncmp(message, "WITCH ", 6) == 0 ||
+                          strncmp(message, "DAY DISCUSSION ", 15) == 0 ||
+                          strncmp(message, "EXILE VOTE ", 11) == 0 ||
                           strncmp(message, "Entering the night", 18) == 0 ||
+                          strncmp(message, "Entering the day", 16) == 0 ||
                           strncmp(message, "DAYBREAK", 8) == 0 ||
                           strcmp(message, "********SLEEPING********") == 0 ||
                           strcmp(message, "You have woken up") == 0 ||
-                          strstr(message, "******* GAME OVER -") == message;
+                          strstr(message, "********* GAME OVER -") == message;
     if (phase_boundary) {
         putchar('\n');
     }

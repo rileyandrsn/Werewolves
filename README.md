@@ -19,8 +19,10 @@ tar -xzf werewolves.tgz
 sudo bash setup.sh
 ```
 
+Use `sudo ./setup.sh --num-players=6` to create `wwplayer1` through
+`wwplayer6` instead of the default four players. The accepted range is 2 to 16.
 Setup installs missing C build tools, creates the `wwgame` group, `wwmod`, and
-four distinct player accounts (`wwplayer1` through `wwplayer4`), copies the
+the requested distinct player accounts, copies the
 project to `/opt/werewolves`, and builds it there. It needs administrator
 privileges. Build tools are installed with `apt-get` if needed, so that step
 needs package repository access. To choose two werewolves after setup, run
@@ -35,8 +37,8 @@ cd /opt/werewolves
 ./server
 ```
 
-Use `wwplayer1`, `wwplayer2`, `wwplayer3`, and `wwplayer4` in the other
-terminals and run `./client` there. Start the server last because its lobby
+Use `wwplayer1` through the configured player count in the other terminals
+and run `./client` there. Start the server last because its lobby
 timer begins immediately. At least one werewolf and one witch are required.
 
 When everyone has exited the game and their account shells, run
@@ -44,7 +46,9 @@ When everyone has exited the game and their account shells, run
 only accounts (including their home directories), the group, and
 `/opt/werewolves` if setup created them. It keeps pre-existing accounts,
 groups, installations, and build tools. It stops
-if any game account still has a running process. If you already installed the
+if any game account still has a running process. It finds setup-created player
+accounts by the `wwplayer` prefix in its setup records, regardless of the
+player count. If you already installed the
 game manually in `/opt/werewolves`, extract the updated archive into that
 directory as `wwmod` and run `sudo bash /opt/werewolves/setup.sh`; the removal
 script will preserve that earlier installation and its accounts.
@@ -115,12 +119,13 @@ werewolves win. If no werewolves remain and at least one townsperson or witch
 remains, townspeople win. A game with no surviving players ends without a
 winner. Otherwise another night begins.
 
-The moderator terminal shows `PHASE:` headings with `|-` chat, accepted votes,
-witch actions, and phase results beneath them. It does not print raw incoming
-commands or outgoing message queues. Wolf chat and night choices still appear
-there, so keep that terminal visible only to the moderator. Client messages
-have blank lines around phase changes. A win appears as
-`******* GAME OVER - TOWNSPEOPLE WIN! *******` or the werewolf equivalent.
+The moderator terminal announces night and day directly, then shows `PHASE:`
+headings with `|-` chat, accepted votes, witch actions, and results beneath
+them. It does not print raw incoming commands or outgoing message queues.
+Wolf chat and night choices still appear there, so keep that terminal visible
+only to the moderator. Clients see phase names such as
+`DAY DISCUSSION 30 seconds`, with blank lines around each phase. Both clients and moderator see
+`********* GAME OVER - TOWNSPEOPLE WIN! *********` or the werewolf equivalent.
 
 ## Files and communications
 

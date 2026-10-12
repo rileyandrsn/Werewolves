@@ -503,11 +503,11 @@ static int run_phase(night_t *night, phase_t phase, int seconds)
                              "exile vote";
     log_phase(phase_name, seconds);
     char announcement[64];
-    snprintf(announcement, sizeof(announcement), "PHASE %s %d",
-             phase == PHASE_CHAT ? "CHAT" :
-             phase == PHASE_VOTE ? "VOTE" :
+    snprintf(announcement, sizeof(announcement), "%s %d seconds",
+             phase == PHASE_CHAT ? "WEREWOLF CHAT" :
+             phase == PHASE_VOTE ? "WEREWOLF VOTE" :
              phase == PHASE_WITCH ? "WITCH" :
-             phase == PHASE_DAY_DISCUSSION ? "DAY_DISCUSSION" : "EXILE_VOTE",
+             phase == PHASE_DAY_DISCUSSION ? "DAY DISCUSSION" : "EXILE VOTE",
              seconds);
     if (phase == PHASE_WITCH) {
         for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -659,9 +659,9 @@ static int resolve_votes(night_t *night)
 /* Announce the final night outcome after the witch has acted */
 static void announce_daybreak(night_t *night)
 {
-    char message[256] = "DAYBREAK";
+    char message[256];
     int deaths[2] = {night->wolf_victim, night->poison_victim};
-    size_t used = strlen(message);
+    int dead[2];
     int dead_count = 0;
     for (int i = 0; i < 2; i++) {
         int target = deaths[i];
@@ -669,12 +669,16 @@ static void announce_daybreak(night_t *night)
             (i == 1 && target == deaths[0])) {
             continue;
         }
-        used += (size_t)snprintf(message + used, sizeof(message) - used,
-                                 " DEAD %s", night->players[target].name);
-        dead_count++;
+        dead[dead_count++] = target;
     }
     if (dead_count == 0) {
-        snprintf(message, sizeof(message), "DAYBREAK No one died");
+        snprintf(message, sizeof(message), "DAYBREAK: no one died");
+    } else if (dead_count == 1) {
+        snprintf(message, sizeof(message), "DAYBREAK: %s is dead",
+                 night->players[dead[0]].name);
+    } else {
+        snprintf(message, sizeof(message), "DAYBREAK: %s and %s are dead",
+                 night->players[dead[0]].name, night->players[dead[1]].name);
     }
     send_group(night, message, false, true, -1);
 }
@@ -811,9 +815,8 @@ static const char *winner_message(const night_t *night)
 static void announce_winner(night_t *night, const char *winner)
 {
     char message[128];
-    snprintf(message, sizeof(message), "******* GAME OVER - %s *******", winner);
-    log_phase("game over", -1);
-    printf("|- %s\n", winner);
+    snprintf(message, sizeof(message), "********* GAME OVER - %s *********", winner);
+    puts(message);
     send_group(night, message, false, false, -1);
 }
 
@@ -843,8 +846,7 @@ static int play_game(player_t *players)
             night.votes[i] = -1;
             night.day_votes[i] = -1;
         }
-        log_phase("night", -1);
-        puts("|- Entering the night...");
+        puts("\nEntering the night...");
         send_group(&night, "Entering the night...", false, true, -1);
         if (first_round) {
             announce_roles(&night);
@@ -887,6 +889,7 @@ static int play_game(player_t *players)
             break;
         }
 
+        puts("\nEntering the day...");
         wake_survivors(&night);
         if (run_phase(&night, PHASE_DAY_DISCUSSION, DAY_DISCUSSION_SECONDS) == -1) {
             return -1;
@@ -1082,6 +1085,8 @@ cleanup:
         perror("server: remove socket path");
         result = EXIT_FAILURE;
     }
+
+    puts("Server has closed all player connections");
 
     return result;
 }
