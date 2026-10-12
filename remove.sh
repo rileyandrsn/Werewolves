@@ -10,7 +10,12 @@ install_dir=/opt/werewolves
 state_dir=/var/lib/werewolves-setup
 game_group=wwgame
 moderator=wwmod
-players=(wwplayer1 wwplayer2 wwplayer3 wwplayer4)
+players=()
+while IFS=: read -r account _; do
+    if [[ $account =~ ^wwplayer[0-9]+$ ]]; then
+        players+=("$account")
+    fi
+done < <(getent passwd)
 
 if [[ -L "$state_dir" || ! -d "$state_dir" ||
       $(stat -c %u -- "$state_dir" 2>/dev/null) != 0 ||
@@ -39,12 +44,25 @@ if [[ -f "$state_dir/created-install" ]]; then
     rm -- "$state_dir/created-install"
 fi
 
-for account in "${players[@]}" "$moderator"; do
-    if [[ -f "$state_dir/created-user-$account" ]]; then
-        userdel -r "$account"
-        rm -- "$state_dir/created-user-$account"
+shopt -s nullglob
+for marker in "$state_dir"/created-user-wwplayer*; do
+    account=${marker##*/}
+    account=${account#created-user-}
+    if [[ ! $account =~ ^wwplayer[1-9][0-9]*$ ]]; then
+        echo "Unexpected player record at $marker; stopping" >&2
+        exit 1
     fi
+    if getent passwd "$account" >/dev/null; then
+        userdel -r "$account"
+    fi
+    rm -- "$marker"
 done
+if [[ -f "$state_dir/created-user-$moderator" ]]; then
+    if getent passwd "$moderator" >/dev/null; then
+        userdel -r "$moderator"
+    fi
+    rm -- "$state_dir/created-user-$moderator"
+fi
 
 if [[ -f "$state_dir/created-group" ]]; then
     groupdel "$game_group"

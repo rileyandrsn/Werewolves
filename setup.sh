@@ -7,12 +7,32 @@ if (( EUID != 0 )); then
     exit 1
 fi
 
+num_players=4
+if (( $# == 1 )); then
+    if [[ $1 =~ ^--num-players=([0-9]{1,2})$ ]]; then
+        num_players=$((10#${BASH_REMATCH[1]}))
+    else
+        echo "Usage: sudo ./setup.sh [--num-players=N] (N must be 2 to 16)" >&2
+        exit 1
+    fi
+elif (( $# != 0 )); then
+    echo "Usage: sudo ./setup.sh [--num-players=N] (N must be 2 to 16)" >&2
+    exit 1
+fi
+if (( num_players < 2 || num_players > 16 )); then
+    echo "Number of players must be between 2 and 16" >&2
+    exit 1
+fi
+
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 install_dir=/opt/werewolves
 state_dir=/var/lib/werewolves-setup
 game_group=wwgame
 moderator=wwmod
-players=(wwplayer1 wwplayer2 wwplayer3 wwplayer4)
+players=()
+for ((i = 1; i <= num_players; i++)); do
+    players+=("wwplayer$i")
+done
 
 for file in Makefile README.md remove.sh src/client.c src/comm.c src/comm.h src/game.h src/server.c; do
     if [[ ! -f "$source_dir/$file" ]]; then
@@ -124,6 +144,6 @@ fi
 runuser -u "$moderator" -- make -C "$install_dir"
 
 echo "Setup complete"
-echo "Open a terminal for each account with sudo -iu wwmod or sudo -iu wwplayer1 (through wwplayer4)"
+echo "Open a terminal for each account with sudo -iu wwmod or sudo -iu wwplayer1 (through wwplayer$num_players)"
 echo "In each terminal: cd /opt/werewolves"
 echo "Start ./server as wwmod, then start ./client as each player within the 120-second lobby"

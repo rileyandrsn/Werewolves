@@ -9,10 +9,27 @@
 /* Display untrusted server text without passing terminal control bytes through */
 static void display_message(const char *message)
 {
+    bool phase_boundary = strncmp(message, "WEREWOLF CHAT ", 14) == 0 ||
+                          strncmp(message, "WEREWOLF VOTE ", 14) == 0 ||
+                          strncmp(message, "WITCH ", 6) == 0 ||
+                          strncmp(message, "DAY DISCUSSION ", 15) == 0 ||
+                          strncmp(message, "EXILE VOTE ", 11) == 0 ||
+                          strncmp(message, "Entering the night", 18) == 0 ||
+                          strncmp(message, "Entering the day", 16) == 0 ||
+                          strncmp(message, "DAYBREAK", 8) == 0 ||
+                          strcmp(message, "********SLEEPING********") == 0 ||
+                          strcmp(message, "You have woken up") == 0 ||
+                          strstr(message, "********* GAME OVER -") == message;
+    if (phase_boundary) {
+        putchar('\n');
+    }
     for (const unsigned char *p = (const unsigned char *)message; *p; p++) {
         putchar(*p >= 32 && *p <= 126 ? *p : '?');
     }
     putchar('\n');
+    if (phase_boundary) {
+        putchar('\n');
+    }
     fflush(stdout);
 }
 
@@ -41,7 +58,7 @@ static void send_command(comm_peer_t *peer, const char *line)
         verb = "EXILE";
         text = line + 7;
     } else {
-        puts("Use /chat message, /vote UID, /heal, /poison UID, /say message, or /exile UID");
+        puts("Use /chat message, /vote name, /heal, /poison name, /say message, or /exile name");
         return;
     }
     char payload[COMM_MAX_PAYLOAD + 1];
@@ -73,7 +90,7 @@ int main(void)
 
     comm_peer_t peer;
     comm_peer_init(&peer, client_sockfd);
-    puts("Connected; follow phase prompts for /chat, /vote, /heal, /poison, /say, or /exile");
+    puts("CONNECTED - waiting for game to start...");
     fflush(stdout);
     bool stdin_open = true;
     bool connected = true;

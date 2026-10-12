@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +54,31 @@ _Static_assert(WOLF_VOTE_SECONDS > 0, "Vote window must be positive");
 _Static_assert(WITCH_SECONDS > 0, "Witch window must be positive");
 _Static_assert(DAY_DISCUSSION_SECONDS > 0, "Day discussion window must be positive");
 _Static_assert(DAY_VOTE_SECONDS > 0, "Day vote window must be positive");
+
+/* Use the account name for display while the kernel UID remains the identity */
+static int player_name(uid_t uid, char name[PLAYER_NAME_MAX])
+{
+    struct passwd *account = getpwuid(uid);
+    if (account == NULL || account->pw_name == NULL) {
+        errno = ENOENT;
+        return -1;
+    }
+    size_t length = strlen(account->pw_name);
+    if (length == 0 || length >= PLAYER_NAME_MAX) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (size_t i = 0; i < length; i++) {
+        char c = account->pw_name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')) {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+    memcpy(name, account->pw_name, length + 1);
+    return 0;
+}
 
 /*
  * Pick a random index using Linux random bytes
@@ -196,6 +222,17 @@ typedef struct {
     bool poison_available;
 } night_t;
 
+/* Start a new section in the moderator's game log */
+static void log_phase(const char *name, int seconds)
+{
+    if (seconds >= 0) {
+        printf("\nPHASE: %s (%d seconds)\n", name, seconds);
+    } else {
+        printf("\nPHASE: %s\n", name);
+    }
+    fflush(stdout);
+}
+
 /* Close a disconnected player and remove any pending vote from that player */
 static void drop_player(night_t *night, int index)
 {
@@ -203,6 +240,7 @@ static void drop_player(night_t *night, int index)
     if (!player->is_connected) {
         return;
     }
+    printf("|- Player %s disconnected\n", player->name);
     if (comm_close(player->fd) == -1) {
         perror("server: close player");
     }
@@ -216,8 +254,10 @@ static void drop_player(night_t *night, int index)
 /* Queue a private message and remove a player whose output queue fills */
 static void send_player(night_t *night, int index, const char *message)
 {
-    if (night->players[index].is_connected &&
-        comm_peer_queue(&night->peers[index], message) == -1) {
+    if (!night->players[index].is_connected) {
+        return;
+    }
+    if (comm_peer_queue(&night->peers[index], message) == -1) {
         drop_player(night, index);
     }
 }
@@ -260,13 +300,13 @@ static void announce_roles(night_t *night)
         const char *role = night->players[i].role == WEREWOLF ? "WEREWOLF" :
                            night->players[i].role == WITCH ? "WITCH" : "TOWNSPERSON";
         char message[COMM_MAX_PAYLOAD + 1];
-        snprintf(message, sizeof(message), "ROLE %s UID %ju",
-                 role, (uintmax_t)night->players[i].uid);
+        snprintf(message, sizeof(message), "ROLE %s NAME %s",
+                 role, night->players[i].name);
         send_player(night, i, message);
     }
 }
 
-/* Give each living werewolf the current living target UIDs */
+/* Give each living werewolf the current living target names */
 static void announce_wolf_targets(night_t *night)
 {
     for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -281,38 +321,30 @@ static void announce_wolf_targets(night_t *night)
                 !night->players[j].is_alive) {
                 continue;
             }
-            int written = snprintf(message + used, sizeof(message) - used,
-                                   " %ju", (uintmax_t)night->players[j].uid);
-            if (written < 0 || (size_t)written >= sizeof(message) - used) {
-                break;
+            size_t name_length = strlen(night->players[j].name);
+            if (used + 1 + name_length >= sizeof(message)) {
+                send_player(night, i, message);
+                used = (size_t)snprintf(message, sizeof(message),
+                                        "TARGETS %s", night->players[j].name);
+                continue;
             }
-            used += (size_t)written;
+            used += (size_t)snprintf(message + used, sizeof(message) - used,
+                                     " %s", night->players[j].name);
         }
         send_player(night, i, message);
     }
 }
 
-/* Parse a UID and find a connected target other than the sender */
+/* Find a connected player by their account name */
 static int find_target(night_t *night, int sender, const char *text,
                        bool allow_self)
 {
     if (*text == '\0') {
         return -1;
     }
-    for (const char *digit = text; *digit; digit++) {
-        if (*digit < '0' || *digit > '9') {
-            return -1;
-        }
-    }
-    errno = 0;
-    char *end;
-    uintmax_t requested = strtoumax(text, &end, 10);
-    if (errno != 0 || *end != '\0' || requested > (uintmax_t)(uid_t)-1) {
-        return -1;
-    }
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if ((allow_self || i != sender) && night->players[i].is_connected &&
-            night->players[i].uid == (uid_t)requested) {
+            strcmp(night->players[i].name, text) == 0) {
             return i;
         }
     }
@@ -342,21 +374,22 @@ static void handle_command(night_t *night, int sender, phase_t phase,
                 }
             }
             char relay[COMM_MAX_PAYLOAD + 1];
-            snprintf(relay, sizeof(relay), "TOWN_CHAT %ju %s",
-                     (uintmax_t)night->players[sender].uid, chat);
-            send_group(night, relay, false, true, sender);
-            send_player(night, sender, "ACK SAY");
+            snprintf(relay, sizeof(relay), "TOWN_CHAT  | %s: %s",
+                     night->players[sender].name, chat);
+            send_group(night, relay, false, true, -1);
+            printf("|- %s\n", relay);
             return;
         }
         if (phase == PHASE_DAY_VOTE && strncmp(message, "EXILE ", 6) == 0) {
             int target = find_target(night, sender, message + 6, true);
             if (target < 0 || !night->players[target].is_alive ||
                 night->players[target].is_exiled) {
-                send_player(night, sender, "ERROR Choose a living player UID");
+                send_player(night, sender, "ERROR Choose a living player name");
                 return;
             }
             night->day_votes[sender] = target;
-            send_player(night, sender, "ACK EXILE");
+            printf("|- %s voted to exile %s\n",
+                   night->players[sender].name, night->players[target].name);
             return;
         }
         send_player(night, sender, "ERROR Command is not allowed in this phase");
@@ -382,7 +415,9 @@ static void handle_command(night_t *night, int sender, phase_t phase,
             night->players[victim].is_alive = true;
             night->healed = true;
             night->heal_available = false;
-            send_player(night, sender, "ACK HEAL");
+            printf("|- %s healed %s\n",
+                   night->players[sender].name, night->players[victim].name);
+            printf("|- %s has been healed\n", night->players[victim].name);
             send_player(night, victim,
                         "You have awoken dazed in your bed; you decide to go back to bed");
             send_player(night, victim, "********SLEEPING********");
@@ -399,17 +434,19 @@ static void handle_command(night_t *night, int sender, phase_t phase,
             }
             int target = find_target(night, sender, message + 7, false);
             if (target < 0 || !night->players[target].is_alive) {
-                send_player(night, sender, "ERROR Choose another living player UID");
+                send_player(night, sender, "ERROR Choose another living player name");
                 return;
             }
             night->poison_victim = target;
             night->poison_available = false;
             night->players[target].is_alive = false;
-            send_player(night, sender, "ACK POISON");
+            printf("|- %s poisoned %s\n",
+                   night->players[sender].name, night->players[target].name);
+            printf("|- %s has been poisoned\n", night->players[target].name);
             send_player(night, target, "You have been poisoned and died");
             return;
         }
-        send_player(night, sender, "ERROR Use /heal or /poison UID");
+        send_player(night, sender, "ERROR Use /heal or /poison name");
         return;
     }
     if (night->players[sender].role != WEREWOLF ||
@@ -431,20 +468,21 @@ static void handle_command(night_t *night, int sender, phase_t phase,
             }
         }
         char relay[COMM_MAX_PAYLOAD + 1];
-        snprintf(relay, sizeof(relay), "WOLF_CHAT %ju %s",
-                 (uintmax_t)night->players[sender].uid, chat);
-        send_group(night, relay, true, true, sender);
-        send_player(night, sender, "ACK CHAT");
+        snprintf(relay, sizeof(relay), "WOLF_CHAT  | %s: %s",
+                 night->players[sender].name, chat);
+        send_group(night, relay, true, true, -1);
+        printf("|- %s\n", relay);
         return;
     }
     if (phase == PHASE_VOTE && strncmp(message, "VOTE ", 5) == 0) {
         int target = find_target(night, sender, message + 5, false);
         if (target == -1 || !night->players[target].is_alive) {
-            send_player(night, sender, "ERROR Choose another connected player UID");
+            send_player(night, sender, "ERROR Choose another living player name");
             return;
         }
         night->votes[sender] = target;
-        send_player(night, sender, "ACK VOTE");
+        printf("|- %s voted to kill %s\n",
+               night->players[sender].name, night->players[target].name);
         return;
     }
     send_player(night, sender, "ERROR Command is not allowed in this phase");
@@ -458,12 +496,18 @@ static int run_phase(night_t *night, phase_t phase, int seconds)
         return -1;
     }
     deadline.tv_sec += seconds;
+    const char *phase_name = phase == PHASE_CHAT ? "werewolf chat" :
+                             phase == PHASE_VOTE ? "werewolf vote" :
+                             phase == PHASE_WITCH ? "witch" :
+                             phase == PHASE_DAY_DISCUSSION ? "day discussion" :
+                             "exile vote";
+    log_phase(phase_name, seconds);
     char announcement[64];
-    snprintf(announcement, sizeof(announcement), "PHASE %s %d",
-             phase == PHASE_CHAT ? "CHAT" :
-             phase == PHASE_VOTE ? "VOTE" :
+    snprintf(announcement, sizeof(announcement), "%s %d seconds",
+             phase == PHASE_CHAT ? "WEREWOLF CHAT" :
+             phase == PHASE_VOTE ? "WEREWOLF VOTE" :
              phase == PHASE_WITCH ? "WITCH" :
-             phase == PHASE_DAY_DISCUSSION ? "DAY_DISCUSSION" : "EXILE_VOTE",
+             phase == PHASE_DAY_DISCUSSION ? "DAY DISCUSSION" : "EXILE VOTE",
              seconds);
     if (phase == PHASE_WITCH) {
         for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -475,15 +519,15 @@ static int run_phase(night_t *night, phase_t phase, int seconds)
                 char notice[128];
                 if (night->wolf_victim >= 0) {
                     snprintf(notice, sizeof(notice),
-                             "You have woken at daybreak and notice player UID %ju was killed",
-                             (uintmax_t)night->players[night->wolf_victim].uid);
+                             "You have woken at daybreak and notice %s was killed",
+                             night->players[night->wolf_victim].name);
                 } else {
                     snprintf(notice, sizeof(notice),
                              "You have woken at daybreak; no player was killed");
                 }
-                send_player(night, i, notice);
                 send_player(night, i, announcement);
-                send_player(night, i, "ACTIONS /heal or /poison UID");
+                send_player(night, i, notice);
+                send_player(night, i, "ACTIONS /heal or /poison name");
                 send_player(night, i, night->heal_available ?
                             "HEAL AVAILABLE" : "HEAL USED");
                 send_player(night, i, night->poison_available ?
@@ -497,6 +541,9 @@ static int run_phase(night_t *night, phase_t phase, int seconds)
         }
     } else if (phase == PHASE_DAY_DISCUSSION || phase == PHASE_DAY_VOTE) {
         send_group(night, announcement, false, true, -1);
+        send_group(night, phase == PHASE_DAY_DISCUSSION ?
+                   "ACTIONS /say message" : "ACTIONS /exile name",
+                   false, true, -1);
         if (phase == PHASE_DAY_VOTE) {
             char candidates[COMM_MAX_PAYLOAD + 1] = "CANDIDATES";
             size_t used = strlen(candidates);
@@ -504,17 +551,23 @@ static int run_phase(night_t *night, phase_t phase, int seconds)
                 if (!night->players[i].is_connected || !night->players[i].is_alive) {
                     continue;
                 }
-                int written = snprintf(candidates + used, sizeof(candidates) - used,
-                                       " %ju", (uintmax_t)night->players[i].uid);
-                if (written < 0 || (size_t)written >= sizeof(candidates) - used) {
-                    break;
+                size_t name_length = strlen(night->players[i].name);
+                if (used + 1 + name_length >= sizeof(candidates)) {
+                    send_group(night, candidates, false, true, -1);
+                    used = (size_t)snprintf(candidates, sizeof(candidates),
+                                            "CANDIDATES %s", night->players[i].name);
+                    continue;
                 }
-                used += (size_t)written;
+                used += (size_t)snprintf(candidates + used, sizeof(candidates) - used,
+                                         " %s", night->players[i].name);
             }
             send_group(night, candidates, false, true, -1);
         }
     } else {
         send_group(night, announcement, true, true, -1);
+        send_group(night, phase == PHASE_CHAT ?
+                   "ACTIONS /chat message" : "ACTIONS /vote name",
+                   true, true, -1);
         for (int i = 0; i < MAX_PLAYERS; i++) {
             if (night->players[i].is_connected && night->players[i].is_alive &&
                 night->players[i].role != WEREWOLF) {
@@ -593,9 +646,12 @@ static int resolve_votes(night_t *night)
         }
     }
     if (winner == -1) {
+        puts("|- no players were killed during the night");
         return -1;
     }
     night->players[winner].is_alive = false;
+    printf("|- %s has been killed during the night\n",
+           night->players[winner].name);
     send_player(night, winner, "You were killed during the night");
     return winner;
 }
@@ -603,9 +659,9 @@ static int resolve_votes(night_t *night)
 /* Announce the final night outcome after the witch has acted */
 static void announce_daybreak(night_t *night)
 {
-    char message[128] = "DAYBREAK";
+    char message[256];
     int deaths[2] = {night->wolf_victim, night->poison_victim};
-    size_t used = strlen(message);
+    int dead[2];
     int dead_count = 0;
     for (int i = 0; i < 2; i++) {
         int target = deaths[i];
@@ -613,15 +669,18 @@ static void announce_daybreak(night_t *night)
             (i == 1 && target == deaths[0])) {
             continue;
         }
-        used += (size_t)snprintf(message + used, sizeof(message) - used,
-                                 " DEAD %ju", (uintmax_t)night->players[target].uid);
-        dead_count++;
+        dead[dead_count++] = target;
     }
     if (dead_count == 0) {
-        snprintf(message, sizeof(message), "DAYBREAK No one died");
+        snprintf(message, sizeof(message), "DAYBREAK: no one died");
+    } else if (dead_count == 1) {
+        snprintf(message, sizeof(message), "DAYBREAK: %s is dead",
+                 night->players[dead[0]].name);
+    } else {
+        snprintf(message, sizeof(message), "DAYBREAK: %s and %s are dead",
+                 night->players[dead[0]].name, night->players[dead[1]].name);
     }
     send_group(night, message, false, true, -1);
-    puts("Witch phase ended; daybreak result sent");
 }
 
 /* Wake only survivors and describe the night without revealing hidden roles */
@@ -639,8 +698,8 @@ static void wake_survivors(night_t *night)
             continue;
         }
         used += (size_t)snprintf(notice + used, sizeof(notice) - used,
-                                 "%splayer UID %ju", dead_count ? " and " : " ",
-                                 (uintmax_t)night->players[target].uid);
+                                 "%s%s", dead_count ? " and " : " ",
+                                 night->players[target].name);
         dead_count++;
     }
     if (dead_count == 0) {
@@ -682,17 +741,17 @@ static void resolve_exile(night_t *night)
     }
     if (winner == -1) {
         send_group(night, "EXILE RESULT NONE", false, true, -1);
-        puts("No player was exiled");
+        puts("|- No player was exiled");
         return;
     }
     send_player(night, winner, "You have been exiled and cannot return to the game");
     night->players[winner].is_alive = false;
     night->players[winner].is_exiled = true;
-    char result[64];
-    snprintf(result, sizeof(result), "EXILE RESULT UID %ju",
-             (uintmax_t)night->players[winner].uid);
+    char result[128];
+    snprintf(result, sizeof(result), "EXILE RESULT %s",
+             night->players[winner].name);
     send_group(night, result, false, true, -1);
-    printf("Player UID %ju was exiled\n", (uintmax_t)night->players[winner].uid);
+    printf("|- %s has been exiled\n", night->players[winner].name);
 }
 
 /* Flush final messages for up to one second without waiting on a slow player */
@@ -741,15 +800,24 @@ static const char *winner_message(const night_t *night)
         }
     }
     if (wolves == 0 && townspeople == 0) {
-        return "GAME_OVER No players remain";
+        return "NO ONE WINS!";
     }
     if (wolves == 0) {
-        return "GAME_OVER Townspeople win";
+        return "TOWNSPEOPLE WIN!";
     }
     if (townspeople == 0) {
-        return "GAME_OVER Werewolves win";
+        return "WEREWOLVES WIN!";
     }
     return NULL;
+}
+
+/* Announce the winner once the game reaches a terminal state */
+static void announce_winner(night_t *night, const char *winner)
+{
+    char message[128];
+    snprintf(message, sizeof(message), "********* GAME OVER - %s *********", winner);
+    puts(message);
+    send_group(night, message, false, false, -1);
 }
 
 /* Play night and day rounds until one side has no living players */
@@ -778,7 +846,8 @@ static int play_game(player_t *players)
             night.votes[i] = -1;
             night.day_votes[i] = -1;
         }
-        send_group(&night, "Entering the night", false, true, -1);
+        puts("\nEntering the night...");
+        send_group(&night, "Entering the night...", false, true, -1);
         if (first_round) {
             announce_roles(&night);
             first_round = false;
@@ -816,10 +885,11 @@ static int play_game(player_t *players)
         announce_daybreak(&night);
         const char *winner = winner_message(&night);
         if (winner != NULL) {
-            send_group(&night, winner, false, false, -1);
+            announce_winner(&night, winner);
             break;
         }
 
+        puts("\nEntering the day...");
         wake_survivors(&night);
         if (run_phase(&night, PHASE_DAY_DISCUSSION, DAY_DISCUSSION_SECONDS) == -1) {
             return -1;
@@ -830,7 +900,7 @@ static int play_game(player_t *players)
         resolve_exile(&night);
         winner = winner_message(&night);
         if (winner != NULL) {
-            send_group(&night, winner, false, false, -1);
+            announce_winner(&night, winner);
             break;
         }
     }
@@ -876,9 +946,8 @@ int main(void)
     }
     deadline.tv_sec += LOBBY_WAITING_TIME;
 
-    printf("Lobby open for %d seconds at %s\n",
-           LOBBY_WAITING_TIME, // Lobby duration
-           addr.sun_path);    // Socket path
+    log_phase("lobby", LOBBY_WAITING_TIME);
+    printf("|- Socket at %s\n", addr.sun_path);
     fflush(stdout);
 
     for (;;) {
@@ -909,8 +978,7 @@ int main(void)
         /* Lobby clients send no data; input or disconnect releases their slot */
         for (int i = 0; i < MAX_PLAYERS; i++) {
             if (watches[i + 1].ready) {
-                printf("Player left lobby: UID %ju\n",
-                       (uintmax_t)players[i].uid); // Departing player
+                printf("|- Player left lobby: %s\n", players[i].name);
                 if (comm_close(players[i].fd) == -1) {
                     perror("server: close player connection");
                     result = EXIT_FAILURE;
@@ -947,14 +1015,18 @@ int main(void)
         }
 
         uid_t uid;
+        char name[PLAYER_NAME_MAX];
         int slot = -1;
         bool duplicate = false;
         if (comm_peer_uid(client_fd, // Accepted player socket
                           &uid) == -1) { // Player UID output
             perror("server: read player UID");
+        } else if (player_name(uid, name) == -1) {
+            perror("server: read player name");
         } else {
             for (int i = 0; i < MAX_PLAYERS; i++) {
-                if (players[i].is_connected && players[i].uid == uid) {
+                if (players[i].is_connected &&
+                    (players[i].uid == uid || strcmp(players[i].name, name) == 0)) {
                     duplicate = true;
                 }
                 if (!players[i].is_connected && slot == -1) {
@@ -962,10 +1034,10 @@ int main(void)
                 }
             }
             if (duplicate) {
-                puts("Connection rejected: UID already in lobby");
+                puts("|- Connection rejected: account already in lobby");
                 slot = -1;
             } else if (slot == -1) {
-                puts("Connection rejected: lobby full");
+                puts("|- Connection rejected: lobby full");
             }
         }
 
@@ -982,13 +1054,13 @@ int main(void)
                 .is_connected = true,
                 .is_alive = true
             };
-            printf("Player joined lobby: UID %ju\n",
-                   (uintmax_t)uid); // Accepted player
+            memcpy(players[slot].name, name, strlen(name) + 1);
+            printf("|- Player joined lobby: %s\n", name);
         }
         fflush(stdout);
     }
 
-    puts("Lobby closed");
+    puts("|- Lobby closed");
     if (assign_roles(players) == -1) { // Connected lobby players
         result = EXIT_FAILURE;
         goto cleanup;
@@ -1013,6 +1085,8 @@ cleanup:
         perror("server: remove socket path");
         result = EXIT_FAILURE;
     }
+
+    puts("Server has closed all player connections");
 
     return result;
 }
