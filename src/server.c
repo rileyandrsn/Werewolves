@@ -32,12 +32,17 @@
 #define WOLF_VOTE_SECONDS 30
 #endif
 
+#ifndef WITCH_SECONDS
+#define WITCH_SECONDS 30
+#endif
+
 _Static_assert(LOBBY_WAITING_TIME >= 0, "Lobby duration must not be negative");
 _Static_assert(MAX_PLAYERS > 0, "Player limit must be positive");
 _Static_assert(NUM_WEREWOLVES > 0, "There must be at least one werewolf");
 _Static_assert(NUM_WEREWOLVES < MAX_PLAYERS, "Leave room for one witch");
 _Static_assert(WOLF_CHAT_SECONDS > 0, "Chat window must be positive");
 _Static_assert(WOLF_VOTE_SECONDS > 0, "Vote window must be positive");
+_Static_assert(WITCH_SECONDS > 0, "Witch window must be positive");
 
 /*
  * Pick a random index using Linux random bytes
@@ -163,13 +168,17 @@ static int remaining_ms(const struct timespec *deadline)
 
 typedef enum {
     PHASE_CHAT,
-    PHASE_VOTE
+    PHASE_VOTE,
+    PHASE_WITCH
 } phase_t;
 
 typedef struct {
     player_t *players;
     comm_peer_t peers[MAX_PLAYERS];
     int votes[MAX_PLAYERS];
+    int wolf_victim;
+    int poison_victim;
+    bool healed;
 } night_t;
 
 /* Close a disconnected player and remove any pending vote from that player */
@@ -286,6 +295,44 @@ static int find_target(night_t *night, int sender, const char *text)
 static void handle_command(night_t *night, int sender, phase_t phase,
                            const char *message)
 {
+    if (phase == PHASE_WITCH) {
+        if (night->players[sender].role != WITCH) {
+            send_player(night, sender, "ERROR You are sleeping");
+            return;
+        }
+        if (strcmp(message, "HEAL") == 0) {
+            int victim = night->wolf_victim;
+            if (night->healed || victim < 0 || !night->players[victim].is_connected) {
+                send_player(night, sender, "ERROR No player can be healed");
+                return;
+            }
+            night->players[victim].is_alive = true;
+            night->healed = true;
+            send_player(night, sender, "ACK HEAL");
+            send_player(night, victim,
+                        "You have awoken dazed in your bed; you decide to go back to bed");
+            send_player(night, victim, "********SLEEPING********");
+            return;
+        }
+        if (strncmp(message, "POISON ", 7) == 0) {
+            if (night->poison_victim >= 0) {
+                send_player(night, sender, "ERROR Poison has already been used");
+                return;
+            }
+            int target = find_target(night, sender, message + 7);
+            if (target < 0 || !night->players[target].is_alive) {
+                send_player(night, sender, "ERROR Choose another living player UID");
+                return;
+            }
+            night->poison_victim = target;
+            night->players[target].is_alive = false;
+            send_player(night, sender, "ACK POISON");
+            send_player(night, target, "You have been poisoned and died");
+            return;
+        }
+        send_player(night, sender, "ERROR Use /heal or /poison UID");
+        return;
+    }
     if (night->players[sender].role != WEREWOLF) {
         send_player(night, sender, "ERROR Only werewolves can act at night");
         return;
@@ -333,11 +380,39 @@ static int run_phase(night_t *night, phase_t phase, int seconds)
     deadline.tv_sec += seconds;
     char announcement[64];
     snprintf(announcement, sizeof(announcement), "PHASE %s %d",
-             phase == PHASE_CHAT ? "CHAT" : "VOTE", seconds);
-    send_group(night, announcement, true, -1);
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (night->players[i].is_connected && night->players[i].role != WEREWOLF) {
-            send_player(night, i, "********SLEEPING********");
+             phase == PHASE_CHAT ? "CHAT" : phase == PHASE_VOTE ? "VOTE" : "WITCH",
+             seconds);
+    if (phase == PHASE_WITCH) {
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (!night->players[i].is_connected) {
+                continue;
+            }
+            if (night->players[i].role == WITCH) {
+                char notice[128];
+                if (night->wolf_victim >= 0) {
+                    snprintf(notice, sizeof(notice),
+                             "You have woken at daybreak and notice player UID %ju was killed",
+                             (uintmax_t)night->players[night->wolf_victim].uid);
+                } else {
+                    snprintf(notice, sizeof(notice),
+                             "You have woken at daybreak; no player was killed");
+                }
+                send_player(night, i, notice);
+                send_player(night, i, announcement);
+                send_player(night, i, "ACTIONS /heal or /poison UID");
+            } else {
+                if (night->players[i].role == WEREWOLF) {
+                    send_player(night, i, "You have transformed back into a person");
+                }
+                send_player(night, i, "********SLEEPING********");
+            }
+        }
+    } else {
+        send_group(night, announcement, true, -1);
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (night->players[i].is_connected && night->players[i].role != WEREWOLF) {
+                send_player(night, i, "********SLEEPING********");
+            }
         }
     }
 
@@ -389,7 +464,7 @@ static int run_phase(night_t *night, phase_t phase, int seconds)
 }
 
 /* Resolve plurality votes; a tie or no votes means no one is eaten */
-static void resolve_votes(night_t *night)
+static int resolve_votes(night_t *night)
 {
     int tallies[MAX_PLAYERS] = {0};
     for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -410,17 +485,34 @@ static void resolve_votes(night_t *night)
         }
     }
     if (winner == -1) {
-        send_group(night, "RESULT NO_KILL", false, -1);
-        puts("Night ended with no kill");
-        return;
+        return -1;
     }
     night->players[winner].is_alive = false;
-    char message[64];
-    snprintf(message, sizeof(message), "RESULT EATEN %ju",
-             (uintmax_t)night->players[winner].uid);
+    return winner;
+}
+
+/* Announce the final night outcome after the witch has acted */
+static void announce_daybreak(night_t *night)
+{
+    char message[128] = "DAYBREAK";
+    int deaths[2] = {night->wolf_victim, night->poison_victim};
+    size_t used = strlen(message);
+    int dead_count = 0;
+    for (int i = 0; i < 2; i++) {
+        int target = deaths[i];
+        if (target < 0 || night->players[target].is_alive ||
+            (i == 1 && target == deaths[0])) {
+            continue;
+        }
+        used += (size_t)snprintf(message + used, sizeof(message) - used,
+                                 " DEAD %ju", (uintmax_t)night->players[target].uid);
+        dead_count++;
+    }
+    if (dead_count == 0) {
+        snprintf(message, sizeof(message), "DAYBREAK No one died");
+    }
     send_group(night, message, false, -1);
-    printf("Night ended: player UID %ju was eaten\n",
-           (uintmax_t)night->players[winner].uid);
+    puts("Witch phase ended; daybreak result sent");
 }
 
 /* Flush final messages for up to one second without waiting on a slow player */
@@ -456,7 +548,7 @@ static void flush_results(night_t *night)
 /* Play the first night phase and return 0 on success or -1 on wait failure */
 static int first_night(player_t *players)
 {
-    night_t night = {.players = players};
+    night_t night = {.players = players, .wolf_victim = -1, .poison_victim = -1};
     for (int i = 0; i < MAX_PLAYERS; i++) {
         night.votes[i] = -1;
         if (players[i].is_connected) {
@@ -471,7 +563,11 @@ static int first_night(player_t *players)
     if (run_phase(&night, PHASE_VOTE, WOLF_VOTE_SECONDS) == -1) {
         return -1;
     }
-    resolve_votes(&night);
+    night.wolf_victim = resolve_votes(&night);
+    if (run_phase(&night, PHASE_WITCH, WITCH_SECONDS) == -1) {
+        return -1;
+    }
+    announce_daybreak(&night);
     flush_results(&night);
     return 0;
 }
