@@ -24,6 +24,9 @@ static void send_command(comm_peer_t *peer, const char *line)
     if (strncmp(line, "/chat ", 6) == 0) {
         verb = "CHAT";
         text = line + 6;
+    } else if (strncmp(line, "/say ", 5) == 0) {
+        verb = "SAY";
+        text = line + 5;
     } else if (strncmp(line, "/vote ", 6) == 0 ||
                strncmp(line, "/eat ", 5) == 0) {
         verb = "VOTE";
@@ -34,8 +37,11 @@ static void send_command(comm_peer_t *peer, const char *line)
     } else if (strncmp(line, "/poison ", 8) == 0) {
         verb = "POISON";
         text = line + 8;
+    } else if (strncmp(line, "/exile ", 7) == 0) {
+        verb = "EXILE";
+        text = line + 7;
     } else {
-        puts("Use /chat message, /vote UID, /heal, or /poison UID");
+        puts("Use /chat message, /vote UID, /heal, /poison UID, /say message, or /exile UID");
         return;
     }
     char payload[COMM_MAX_PAYLOAD + 1];
@@ -67,7 +73,7 @@ int main(void)
 
     comm_peer_t peer;
     comm_peer_init(&peer, client_sockfd);
-    puts("Connected; use /chat message, /vote UID, /heal, or /poison UID when prompted");
+    puts("Connected; follow phase prompts for /chat, /vote, /heal, /poison, /say, or /exile");
     fflush(stdout);
     bool stdin_open = true;
     bool connected = true;
