@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/random.h>
 #include <time.h>
 
 #include "comm.h"
@@ -18,8 +19,107 @@
 #define MAX_PLAYERS 16
 #endif
 
+#ifndef NUM_WEREWOLVES
+#define NUM_WEREWOLVES 1
+#endif
+
 _Static_assert(LOBBY_WAITING_TIME >= 0, "Lobby duration must not be negative");
 _Static_assert(MAX_PLAYERS > 0, "Player limit must be positive");
+_Static_assert(NUM_WEREWOLVES > 0, "There must be at least one werewolf");
+_Static_assert(NUM_WEREWOLVES < MAX_PLAYERS, "Leave room for one witch");
+
+/*
+ * Pick a random index using Linux random bytes
+ *
+ * Parameters:
+ * - int count: Positive number of possible indices
+ *
+ * Returns:
+ * - int index (>= 0): Random index below count
+ * - int -1: Random read failed; errno gives the error
+ */
+static int random_index(int count)
+{
+    uint32_t value;
+    uint32_t limit = UINT32_MAX - UINT32_MAX % (uint32_t)count;
+
+    /* Reject the uneven remainder so every index has the same chance */
+    do {
+        size_t offset = 0;
+        while (offset < sizeof(value)) {
+            ssize_t received = getrandom((unsigned char *)&value + offset, // Next output byte
+                                         sizeof(value) - offset,           // Bytes still needed
+                                         0);                               // Wait for random bytes
+            if (received == -1) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                return -1;
+            }
+            if (received == 0) {
+                errno = EIO;
+                return -1;
+            }
+            offset += (size_t)received;
+        }
+    } while (value >= limit);
+
+    return (int)(value % (uint32_t)count);
+}
+
+/*
+ * Randomly assign werewolves, one witch, and townspeople after the lobby
+ * The moderator is not in the player array
+ *
+ * Parameters:
+ * - player_t *players: Array of MAX_PLAYERS slots; only connected players join
+ *
+ * Returns:
+ * - int 0: Every connected player has a role
+ * - int -1: Too few players or random read failed; roles stay unchanged
+ */
+static int assign_roles(player_t *players)
+{
+    int order[MAX_PLAYERS];
+    int count = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (players[i].is_connected) {
+            order[count++] = i;
+        }
+    }
+
+    if (count < NUM_WEREWOLVES + 1) {
+        fprintf(stderr, "server: need at least %d players for %d werewolves and one witch; got %d\n",
+                NUM_WEREWOLVES + 1, // Minimum player count
+                NUM_WEREWOLVES,     // Required werewolves
+                count);             // Connected players
+        return -1;
+    }
+
+    /* Shuffle slot indices without moving player records */
+    for (int i = count - 1; i > 0; i--) {
+        int chosen = random_index(i + 1); // Remaining indices to choose from
+        if (chosen == -1) {
+            perror("server: random role assignment");
+            return -1;
+        }
+        int saved = order[i];
+        order[i] = order[chosen];
+        order[chosen] = saved;
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (i < NUM_WEREWOLVES) {
+            players[order[i]].role = WEREWOLF;
+        } else if (i == NUM_WEREWOLVES) {
+            players[order[i]].role = WITCH;
+        } else {
+            players[order[i]].role = TOWNS_PERSON;
+        }
+    }
+
+    return 0;
+}
 
 /*
  * Placeholder for the next game step
@@ -214,6 +314,10 @@ int main(void)
     }
 
     puts("Lobby closed");
+    if (assign_roles(players) == -1) { // Connected lobby players
+        result = EXIT_FAILURE;
+        goto cleanup;
+    }
     temp();
 
 cleanup:

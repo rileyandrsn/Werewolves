@@ -8,7 +8,7 @@
 typedef enum
 {
     ROLE_UNASSIGNED = -1,
-    WEREWOLVE,
+    WEREWOLF,
     WITCH,
     TOWNS_PERSON
 } role_t;
