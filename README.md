@@ -1,8 +1,7 @@
 # Werewolves
 
 A Linux C11 text game in progress. The moderator and clients communicate over a
-UNIX domain stream socket. The current game ends after the first werewolf and
-witch phases.
+UNIX domain stream socket. Night and day repeat until one side wins.
 
 ## Build and run
 
@@ -26,7 +25,7 @@ werewolves plus one witch remain at the deadline, the game stops. Run
 `make clean` to remove binaries and an owned stale socket; it preserves a live
 socket.
 
-## First night
+## Night
 
 After the lobby closes, every client sees `Entering the night`, then privately
 receives its role and UID.
@@ -45,12 +44,25 @@ with the most votes is attacked. A tie or no valid votes means no attack.
 
 After voting, werewolves transform back into people and see the sleeping
 message. The witch alone learns who was attacked and gets a 30-second window.
-The witch may use `/heal` once to save that player and `/poison UID` once to
-kill another living player, including a werewolf. The witch cannot poison
+The witch may use `/heal` once per game to save that player and `/poison UID`
+once per game to kill another living player, including a werewolf. The witch cannot poison
 themself. A healed player privately receives a dazed awakening message and
 returns to sleep. A poisoned player privately learns that they died. Other
-players remain asleep during this window. Once it closes, all connected
-clients receive the final daybreak deaths and the server exits.
+players remain asleep during this window.
+
+## Daytime discussion and exile
+
+At daybreak, only living players wake up. They hear which player UIDs died in
+the night, or discover wolf tracks if everyone survived. Every living player,
+including a werewolf or witch, may discuss for 30 seconds with `/say message`.
+Chat goes to the other living players without revealing hidden roles. A
+separate 30-second vote window then opens. Use `/exile UID` to vote for any
+living player, including yourself. A later valid vote replaces your earlier
+one. The living player with the most votes is exiled; a tie or no votes means
+no exile. Exile is permanent and cannot be healed. If only werewolves remain,
+werewolves win. If no werewolves remain and at least one townsperson or witch
+remains, townspeople win. A game with no surviving players ends without a
+winner. Otherwise another night begins.
 
 ## Files and communications
 
