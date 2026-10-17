@@ -1,7 +1,10 @@
 # Werewolves
 
-Werewolves is a Linux CLI game based off of the game Mafia. The moderator and clients communicate over a
-UNIX domain stream socket. Night and day repeat until one side wins.
+Werewolves is a Linux CLI game based on the game Mafia. The moderator and clients communicate over a
+UNIX domain stream socket. 
+
+See ```Build and run``` for instructions on installing the game.
+See ```Gameplay Guide``` for instructions on playing the game.
 
 ## Build and run
 
@@ -24,8 +27,8 @@ Use `sudo ./setup.sh --num-players=6` to create `wwplayer1` through
 The setup script
 * installs missing C build tools 
 * creates the `wwgame` group, `wwmod`, and the requested distinct player accounts
-* copies the project to `/opt/werewolves`
-* and builds it there. 
+* copies the project to `/opt/werewolves` and builds it there
+
 It needs administrator privileges. Build tools are installed with `apt-get` if needed, so that step
 needs package repository access. 
 To choose two werewolves after setup, run
@@ -96,14 +99,4 @@ remains, townspeople win. A game with no surviving players ends without a winner
 - `setup.sh` provisions VM accounts, installs the source, and builds the game
 - `remove.sh` removes resources recorded as created by setup
 
-Each wire message is ASCII text preceded by a four-byte unsigned length in
-network byte order. Payloads have 1 to 512 bytes and are never raw C structs.
-`comm_peer_init` creates per-connection transport state; `comm_peer_read`
-receives one frame; `comm_peer_queue` and `comm_peer_queue_group` enqueue
-private or group messages; `comm_peer_flush` sends queued bytes without
-blocking. `comm_wait` reports readiness for the server and client. The server
-uses `comm_peer_uid` to get identity from Linux `SO_PEERCRED` rather than a
-client-supplied name. The server looks up that UID's Linux account name for
-display and command targets. A successful queue or send does not mean a game
-command was accepted. Invalid game commands receive `ERROR`; successful votes
-and witch actions do not send acknowledgment messages.
+
