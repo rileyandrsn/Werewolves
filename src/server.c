@@ -690,7 +690,7 @@ static void wake_survivors(night_t *night)
     char notice[256];
     int dead_count = 0;
     size_t used = (size_t)snprintf(notice, sizeof(notice),
-                                  "You rejoice with the townspeople outside and discover that");
+                                  "You convene with the townspeople outside and discover that");
     for (int i = 0; i < 2; i++) {
         int target = deaths[i];
         if (target < 0 || night->players[target].is_alive ||
@@ -704,7 +704,7 @@ static void wake_survivors(night_t *night)
     }
     if (dead_count == 0) {
         snprintf(notice, sizeof(notice),
-                 "You go outside and rejoice with the townspeople and discover wolf tracks");
+                 "You go outside and convene with the townspeople and discover wolf tracks");
     } else {
         snprintf(notice + used, sizeof(notice) - used,
                  dead_count == 1 ? " has been killed" : " have been killed");
