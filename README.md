@@ -86,7 +86,29 @@ The living player with the most votes is exiled; a tie or no votes means no exil
 remains, townspeople win. A game with no surviving players ends without a winner. Otherwise another night begins.
 
 
-## Files and communications
+## Files and Communication
+The communications library is implemented in ```src/comm.c```, with its public interface in ```src/comm.h```.
+
+Werewolves uses a UNIX domain stream socket for inter-process communication (IPC) between the server and client processes. It provides functionality for establishing client-server connections, message transmission and receipt, and communication management.
+
+| Function                | Description                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------- |
+| comm_peer_init()        | Initializes the communication state, including buffers for the connected socket |   
+| comm_peer_read()        | Reads a message from a socket                                                   |   
+| comm_peer_queue()       | Queues a message for transmission                                               |   
+| comm_peer_queue_group() | Queues a message to be transmitted to multiple recipients                       |   
+| comm_peer_flush()       | Transmits queued data to a connected client                                     |   
+| comm_peer_has_output()  | Checks if a client has pending data in its buffer                               |   
+| comm_wait()             | Monitors multiple sockets for activity using poll()                             |   
+| comm_socket_setup()     | Creates a UNIX domain stream socket                                             |   
+| comm_addr_setup()       | Initializes the server socket address                                           |   
+| comm_server_setup()     | Binds the server socket to its address, listens for incoming client connections |   
+| comm_server_accept()    | Accepts one incoming client connection                                          |   
+| comm_peer_uid()         | Retrieves the peer's Linux UID                                                  |   
+| comm_client_connect()   | Connects a client to the server                                                 |   
+| comm_close()            | Closes a socket file descriptor                                                 |   
+| comm_server_cleanup()   | Cleans up the server's socket path                                              |   
+
 
 - `src/comm.c` is the communications library: socket setup, peer UID lookup,
   readiness waiting, framed reads and writes, queues, and group delivery
