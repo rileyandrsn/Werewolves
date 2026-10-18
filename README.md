@@ -24,7 +24,8 @@ sudo bash setup.sh
 
 Use `sudo ./setup.sh --num-players=6` to create `wwplayer1` through
 `wwplayer6` instead of the default four players. The accepted range is 2 to 16.
-The setup script
+
+The setup script:
 * installs missing C build tools 
 * creates the `wwgame` group, `wwmod`, and the requested distinct player accounts
 * copies the project to `/opt/werewolves` and builds it there
@@ -52,6 +53,7 @@ from the extracted project. The removal script removes
 * only accounts (including their home directories)
 * the group 
 * and `/opt/werewolves` if setup created them. 
+
 It keeps pre-existing accounts, groups, installations, and build tools. It stops
 if any game account still has a running process. It finds setup-created player accounts by the `wwplayer` prefix in its setup records, regardless of the player count. If you already installed the game manually in `/opt/werewolves`, extract the updated archive into that directory as `wwmod` and run `sudo bash /opt/werewolves/setup.sh`; the removal script will preserve that earlier installation and its accounts.
 
@@ -60,11 +62,10 @@ if any game account still has a running process. It finds setup-created player a
 ## Gameplay Guide
 
 ### Lobby
-Clients first see `CONNECTED - waiting for game to start...`. The server creates a lobby that gives players 120 seconds to connect to the server.
+The server creates a lobby that gives players 120 seconds to connect to the server.
 
 ### Werewolf / Nighttime Phases
-After the lobby closes, every player enters the nighttime phase, then privately receives its role and Linux account name.
-Werewolves also receive the names they may target: every other connected player, including other werewolves. A werewolf cannot target themself. During each werewolf window, the witch and townspeople are asleep. Only werewolves receive the chat or vote prompt.
+After the lobby closes, every player enters the nighttime phase, then privately receives its role. Werewolves also receive the names they may target: every other connected player, including other werewolves. A werewolf cannot target themself. During each werewolf window, the witch and townspeople are asleep. Only werewolves receive the chat or vote prompt.
 
 With two or more werewolves, a 30-second chat window comes first. A werewolf may enter `/chat <message>` 
 only the werewolves receive it. With one werewolf, this chat window is skipped.
@@ -83,7 +84,7 @@ returns to sleep. A poisoned player privately learns that they died. Other playe
 At daybreak, only living players wake up. They hear which player names died in the night, or discover wolf tracks if everyone survived. Every living player, including a werewolf or witch, may discuss for 30 seconds with `/say <message>`.
 A separate 30-second vote window then opens. All players are given the opportunity to vote on which player should be exiled from the town, using `/exile <name>` to vote for any living player; a later valid vote replaces your earlier one. 
 The living player with the most votes is exiled; a tie or no votes means no exile. Exile is permanent and cannot be healed. If only werewolves remain, werewolves win. If no werewolves remain and at least one townsperson or witch
-remains, townspeople win. A game with no surviving players ends without a winner. Otherwise another night begins.
+remains, townspeople win. A game with no surviving players ends without a winner. Otherwise another night begins and the night/day cycle repeats.
 
 
 ## Files and Communication
